@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local/private interview data
+private/
+.env
+*.db
+*.sqlite
+vector_store/
+artifacts/
