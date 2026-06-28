@@ -26,3 +26,34 @@
 - Resource: NeetCode 150 Pro
 - Primary language: Python
 - Target: Consistent medium-level performance within 20–30 minutes
+## Phase 1 — DSA Foundations
+
+**Resource:** NeetCode — Algorithms & Data Structures for Beginners
+**Status:** In progress
+**Progress:** 1 / 35
+**Primary language:** Python
+
+### Objectives
+
+* Build reliable Python implementation fluency
+* Understand the mechanics of fundamental data structures
+* Develop accurate time and space complexity analysis
+* Explain algorithms clearly without relying on memorized code
+* Establish the foundation required for NeetCode 150
+
+### Completion Criteria
+
+A lesson is considered complete only when I can:
+
+* Explain the central data structure or algorithm in my own words
+* Implement the core operation without copying
+* State the time and space complexity
+* Identify at least one edge case or failure mode
+* Answer a short review question later without rewatching the lesson
+
+### Current Progress
+
+| Course                                     | Completed | Total | Status      |
+| ------------------------------------------ | --------: | ----: | ----------- |
+| Algorithms & Data Structures for Beginners |         1 |    35 | In progress |
+
