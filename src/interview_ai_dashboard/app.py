@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,10 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
+    QInputDialog,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -181,9 +184,26 @@ class DashboardWindow(QMainWindow):
 
         root_layout.addWidget(self.table)
 
+        controls_layout = QHBoxLayout()
+
+        self.accept_button = QPushButton("Mark accepted")
+        self.accept_button.clicked.connect(
+            lambda: self.record_feedback("accepted")
+        )
+        controls_layout.addWidget(self.accept_button)
+
+        self.reject_button = QPushButton("Mark rejected")
+        self.reject_button.clicked.connect(
+            lambda: self.record_feedback("rejected")
+        )
+        controls_layout.addWidget(self.reject_button)
+
         refresh_button = QPushButton("Refresh now")
         refresh_button.clicked.connect(self.refresh)
-        root_layout.addWidget(refresh_button)
+        controls_layout.addWidget(refresh_button)
+
+        controls_layout.addStretch()
+        root_layout.addLayout(controls_layout)
 
         self.setCentralWidget(root)
 
@@ -317,6 +337,12 @@ class DashboardWindow(QMainWindow):
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
 
+                if column == 0:
+                    item.setData(
+                        Qt.ItemDataRole.UserRole,
+                        request_id,
+                    )
+
                 if column in {3, 4, 5, 6, 8, 9}:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight
@@ -324,6 +350,138 @@ class DashboardWindow(QMainWindow):
                     )
 
                 self.table.setItem(row, column, item)
+
+
+    def selected_request(
+        self,
+    ) -> tuple[str, dict[str, Any]] | None:
+        selected_rows = self.table.selectionModel().selectedRows()
+
+        if len(selected_rows) != 1:
+            QMessageBox.information(
+                self,
+                "Select one request",
+                "Select exactly one request row first.",
+            )
+            return None
+
+        row = selected_rows[0].row()
+        first_item = self.table.item(row, 0)
+
+        if first_item is None:
+            return None
+
+        request_id = first_item.data(Qt.ItemDataRole.UserRole)
+
+        if not request_id:
+            QMessageBox.warning(
+                self,
+                "Request ID missing",
+                "The selected row does not contain a request ID.",
+            )
+            return None
+
+        records = load_records(LOG_PATH)
+        requests, _ = split_records(records)
+
+        request = next(
+            (
+                item
+                for item in requests
+                if item.get("request_id") == request_id
+            ),
+            None,
+        )
+
+        if request is None:
+            QMessageBox.warning(
+                self,
+                "Request not found",
+                "The selected request is no longer present in the log.",
+            )
+            return None
+
+        return str(request_id), request
+
+    def record_feedback(self, status: str) -> None:
+        selected = self.selected_request()
+
+        if selected is None:
+            return
+
+        request_id, request = selected
+
+        prompt = (
+            "Why was this result accepted?"
+            if status == "accepted"
+            else "Why was this result rejected?"
+        )
+
+        reason, confirmed = QInputDialog.getText(
+            self,
+            f"Mark {status}",
+            prompt,
+        )
+
+        if not confirmed:
+            return
+
+        reason = reason.strip()
+
+        if not reason:
+            QMessageBox.information(
+                self,
+                "Reason required",
+                "Enter a short reason so the feedback remains useful.",
+            )
+            return
+
+        feedback = {
+            "record_type": "feedback",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "target_request_id": request_id,
+            "status": status,
+            "reason": reason,
+            "route": request.get("route"),
+            "routing_reason": request.get("reason"),
+            "prompt_tokens": request.get("prompt_tokens", 0),
+            "completion_tokens": request.get(
+                "completion_tokens",
+                0,
+            ),
+            "actual_claude_cost_usd_estimate": request.get(
+                "actual_claude_cost_usd_estimate",
+                0,
+            ),
+            "avoided_claude_cost_usd_estimate": request.get(
+                "avoided_claude_cost_usd_estimate",
+                0,
+            ),
+        }
+
+        try:
+            LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+            with LOG_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(feedback, ensure_ascii=False)
+                    + "\n"
+                )
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Feedback write error",
+                str(exc),
+            )
+            return
+
+        self.refresh()
+
+        QMessageBox.information(
+            self,
+            "Feedback recorded",
+            f"Request marked {status}.",
+        )
 
 
 def main() -> int:
