@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -349,6 +350,11 @@ class DashboardWindow(QMainWindow):
                         | Qt.AlignmentFlag.AlignVCenter
                     )
 
+                if feedback_status == "accepted":
+                    item.setBackground(QColor(220, 245, 225))
+                elif feedback_status == "rejected":
+                    item.setBackground(QColor(250, 225, 225))
+
                 self.table.setItem(row, column, item)
 
 
@@ -410,6 +416,39 @@ class DashboardWindow(QMainWindow):
             return
 
         request_id, request = selected
+
+        records = load_records(LOG_PATH)
+        _, existing_feedback = split_records(records)
+        current_feedback = existing_feedback.get(request_id)
+
+        if current_feedback is not None:
+            current_status = current_feedback.get(
+                "status",
+                "unknown",
+            )
+            current_reason = current_feedback.get(
+                "reason",
+                "",
+            )
+
+            message = (
+                "This request already has feedback.\n\n"
+                f"Current status: {current_status}\n"
+                f"Current reason: {current_reason or '(none)'}\n\n"
+                f"Replace it with '{status}' feedback?"
+            )
+
+            confirmation = QMessageBox.question(
+                self,
+                "Replace existing feedback?",
+                message,
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+
+            if confirmation != QMessageBox.StandardButton.Yes:
+                return
 
         prompt = (
             "Why was this result accepted?"
