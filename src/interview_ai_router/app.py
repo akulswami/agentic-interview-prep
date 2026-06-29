@@ -239,6 +239,8 @@ async def health(
     authorize(authorization)
     return {
         "status": "ok",
+        "service": "interview-ai-router",
+        "source": "repository",
         "litellm": LITELLM_BASE_URL,
         "local_model": LOCAL_MODEL,
         "claude_model": CLAUDE_MODEL,
