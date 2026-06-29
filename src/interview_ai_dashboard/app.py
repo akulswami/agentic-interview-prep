@@ -33,6 +33,26 @@ LOG_PATH = (
     / "usage.jsonl"
 )
 
+LIVE_PATH = (
+    Path.home()
+    / ".local"
+    / "state"
+    / "interview-prep-router"
+    / "live.json"
+)
+
+
+def load_json_object(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    return value if isinstance(value, dict) else None
+
 
 def load_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
@@ -136,6 +156,7 @@ class DashboardWindow(QMainWindow):
         self.resize(1250, 720)
 
         self.last_log_mtime_ns: int | None = None
+        self.last_live_mtime_ns: int | None = None
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -162,6 +183,16 @@ class DashboardWindow(QMainWindow):
             metrics_layout.addWidget(card, index // 3, index % 3)
 
         root_layout.addLayout(metrics_layout)
+
+        self.live_status_label = QLabel("Live request: idle")
+        self.live_status_label.setStyleSheet(
+            "font-size: 15px; font-weight: bold; padding: 8px;"
+        )
+        root_layout.addWidget(self.live_status_label)
+
+        self.live_details_label = QLabel("")
+        self.live_details_label.setWordWrap(True)
+        root_layout.addWidget(self.live_details_label)
 
         self.status_label = QLabel(f"Log: {LOG_PATH}")
         root_layout.addWidget(self.status_label)
@@ -215,25 +246,41 @@ class DashboardWindow(QMainWindow):
         self.refresh()
 
     def refresh_if_changed(self) -> None:
-        if not LOG_PATH.exists():
-            if self.last_log_mtime_ns is not None:
-                self.refresh()
-            return
+        log_changed = False
+        live_changed = False
 
-        current_mtime_ns = LOG_PATH.stat().st_mtime_ns
+        if LOG_PATH.exists():
+            current_log_mtime_ns = LOG_PATH.stat().st_mtime_ns
+            log_changed = current_log_mtime_ns != self.last_log_mtime_ns
+        elif self.last_log_mtime_ns is not None:
+            log_changed = True
 
-        if current_mtime_ns != self.last_log_mtime_ns:
+        if LIVE_PATH.exists():
+            current_live_mtime_ns = LIVE_PATH.stat().st_mtime_ns
+            live_changed = (
+                current_live_mtime_ns != self.last_live_mtime_ns
+            )
+        elif self.last_live_mtime_ns is not None:
+            live_changed = True
+
+        if log_changed or live_changed:
             self.refresh()
 
     def refresh(self) -> None:
         try:
             records = load_records(LOG_PATH)
             requests, feedback = split_records(records)
+            live = load_json_object(LIVE_PATH)
+
+            self.populate_live_status(live)
             self.populate_metrics(requests, feedback)
             self.populate_table(requests, feedback)
 
             if LOG_PATH.exists():
                 self.last_log_mtime_ns = LOG_PATH.stat().st_mtime_ns
+
+            if LIVE_PATH.exists():
+                self.last_live_mtime_ns = LIVE_PATH.stat().st_mtime_ns
 
             self.status_label.setText(
                 f"Loaded {len(requests)} requests from {LOG_PATH}"
@@ -244,6 +291,55 @@ class DashboardWindow(QMainWindow):
                 "Log read error",
                 str(exc),
             )
+
+    def populate_live_status(
+        self,
+        live: dict[str, Any] | None,
+    ) -> None:
+        if not live:
+            self.live_status_label.setText("Live request: idle")
+            self.live_details_label.setText("")
+            return
+
+        status = str(live.get("status", "unknown"))
+        route = str(live.get("route", "unknown"))
+        reason = str(live.get("reason", "unknown"))
+        elapsed = float(live.get("elapsed_seconds", 0))
+        characters = int(live.get("streamed_characters", 0))
+        estimated = int(
+            live.get("estimated_completion_tokens", 0)
+        )
+        prompt_tokens = int(live.get("prompt_tokens", 0))
+        completion_tokens = int(live.get("completion_tokens", 0))
+
+        backend = (
+            "Jetson Local"
+            if route == "interview-local"
+            else "Claude"
+            if route == "interview-claude"
+            else route
+        )
+
+        self.live_status_label.setText(
+            f"Live request: {status.upper()} — {backend}"
+        )
+
+        if status in {"routing", "generating"}:
+            token_text = (
+                f"Estimated streamed tokens: {estimated}"
+            )
+        else:
+            token_text = (
+                f"Final tokens: {prompt_tokens} prompt + "
+                f"{completion_tokens} completion"
+            )
+
+        self.live_details_label.setText(
+            f"Reason: {reason}  |  "
+            f"Elapsed: {elapsed:.3f}s  |  "
+            f"Streamed characters: {characters}  |  "
+            f"{token_text}"
+        )
 
     def populate_metrics(
         self,
