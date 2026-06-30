@@ -138,6 +138,7 @@ class MetricCard(QWidget):
 class DashboardWindow(QMainWindow):
     COLUMNS = [
         "Time",
+        "Task",
         "Backend",
         "Reason",
         "Prompt",
@@ -304,6 +305,7 @@ class DashboardWindow(QMainWindow):
         status = str(live.get("status", "unknown"))
         route = str(live.get("route", "unknown"))
         reason = str(live.get("reason", "unknown"))
+        task = str(live.get("task_label", "Untitled request"))
         elapsed = float(live.get("elapsed_seconds", 0))
         characters = int(live.get("streamed_characters", 0))
         estimated = int(
@@ -335,6 +337,7 @@ class DashboardWindow(QMainWindow):
             )
 
         self.live_details_label.setText(
+            f"Task: {task}  |  "
             f"Reason: {reason}  |  "
             f"Elapsed: {elapsed:.3f}s  |  "
             f"Streamed characters: {characters}  |  "
@@ -414,6 +417,7 @@ class DashboardWindow(QMainWindow):
 
             values = [
                 request.get("timestamp", ""),
+                request.get("task_label", "Legacy request"),
                 request.get("route", ""),
                 request.get("reason", ""),
                 str(request.get("prompt_tokens", 0)),
@@ -440,7 +444,7 @@ class DashboardWindow(QMainWindow):
                         request_id,
                     )
 
-                if column in {3, 4, 5, 6, 8, 9}:
+                if column in {4, 5, 6, 7, 9, 10}:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight
                         | Qt.AlignmentFlag.AlignVCenter

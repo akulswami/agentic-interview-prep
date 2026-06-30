@@ -5,7 +5,7 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -97,6 +97,20 @@ CLAUDE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 LOCAL_FORCE_PATTERN = re.compile(r"^/local\b", re.I)
 CLAUDE_FORCE_PATTERN = re.compile(r"^/claude\b", re.I)
 
+CONTINUATION_PATTERN = re.compile(
+    r"(?im)^\s*"
+    r"(?:"
+    r"continue(?:\s+(?:your|the|this))?\s+(?:response|answer)"
+    r"(?:\s+(?:exactly\s+)?where\s+you\s+left\s+off)?"
+    r"|continue\s+(?:exactly\s+)?where\s+you\s+left\s+off"
+    r"|go\s+on"
+    r"|finish\s+(?:the|your)\s+(?:response|answer)"
+    r")"
+    r"\s*[:.!]?\s*$"
+)
+
+CONTINUATION_WINDOW = timedelta(minutes=5)
+
 
 def authorize(authorization: str | None) -> None:
     if authorization != f"Bearer {EXPECTED_ROUTER_KEY}":
@@ -115,6 +129,89 @@ def flatten_text(value: Any) -> str:
         )
 
     return ""
+
+
+def normalize_text(value: str) -> str:
+    return " ".join(value.split())
+
+
+def task_label(messages: list[dict[str, Any]]) -> str:
+    text = latest_user_prompt(messages)
+    text = re.sub(
+        r"^\s*/(?:local|claude)\b\s*",
+        "",
+        text,
+        count=1,
+        flags=re.I,
+    )
+
+    continuation_match = CONTINUATION_PATTERN.search(text)
+
+    if continuation_match:
+        return normalize_text(continuation_match.group(0))[:160]
+
+    lines = [
+        normalize_text(line)
+        for line in text.splitlines()
+        if normalize_text(line)
+    ]
+
+    for line in reversed(lines):
+        if len(line) <= 240:
+            return line[:160]
+
+    return normalize_text(text)[:160] or "Untitled request"
+
+
+def latest_successful_route() -> str | None:
+    if not LOG_PATH.exists():
+        return None
+
+    cutoff = datetime.now(timezone.utc) - CONTINUATION_WINDOW
+
+    try:
+        lines = LOG_PATH.read_text(
+            encoding="utf-8",
+        ).splitlines()
+    except OSError:
+        return None
+
+    for line in reversed(lines):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if record.get("record_type") == "feedback":
+            continue
+
+        if record.get("success") is not True:
+            continue
+
+        route = record.get("route")
+
+        if route not in {LOCAL_MODEL, CLAUDE_MODEL}:
+            continue
+
+        timestamp_text = record.get("timestamp")
+
+        if not isinstance(timestamp_text, str):
+            continue
+
+        try:
+            timestamp = datetime.fromisoformat(timestamp_text)
+        except ValueError:
+            continue
+
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+        if timestamp < cutoff:
+            return None
+
+        return str(route)
+
+    return None
 
 
 def combined_prompt(messages: list[dict[str, Any]]) -> str:
@@ -140,6 +237,15 @@ def classify(messages: list[dict[str, Any]]) -> tuple[str, str]:
 
     if CLAUDE_FORCE_PATTERN.search(latest_text):
         return CLAUDE_MODEL, "forced_claude"
+
+    if CONTINUATION_PATTERN.search(latest_text):
+        previous_route = latest_successful_route()
+
+        if previous_route == LOCAL_MODEL:
+            return LOCAL_MODEL, "continuation_previous_local"
+
+        if previous_route == CLAUDE_MODEL:
+            return CLAUDE_MODEL, "continuation_previous_claude"
 
     # Classify task intent from the latest user request, not historical chat.
     for reason, pattern in CLAUDE_PATTERNS:
@@ -200,6 +306,7 @@ def live_record(
     status: str,
     selected_model: str,
     reason: str,
+    task: str,
     started_at: str,
     started_monotonic: float,
     streamed_characters: int = 0,
@@ -214,6 +321,7 @@ def live_record(
         "status": status,
         "route": selected_model,
         "reason": reason,
+        "task_label": task,
         "started_at": started_at,
         "elapsed_seconds": round(
             time.perf_counter() - started_monotonic,
@@ -282,6 +390,7 @@ async def chat_completions(
         raise HTTPException(status_code=400, detail="messages must be a list")
 
     selected_model, reason = classify(messages)
+    label = task_label(messages)
     strip_route_prefix(messages)
 
     write_live_snapshot(
@@ -290,6 +399,7 @@ async def chat_completions(
             status="routing",
             selected_model=selected_model,
             reason=reason,
+            task=label,
             started_at=started_at,
             started_monotonic=started,
         )
@@ -321,6 +431,7 @@ async def chat_completions(
                 status="generating",
                 selected_model=selected_model,
                 reason=reason,
+                task=label,
                 started_at=started_at,
                 started_monotonic=started,
             )
@@ -392,6 +503,7 @@ async def chat_completions(
                                 status="generating",
                                 selected_model=selected_model,
                                 reason=reason,
+                                task=label,
                                 started_at=started_at,
                                 started_monotonic=started,
                                 streamed_characters=streamed_characters,
@@ -417,6 +529,7 @@ async def chat_completions(
                         status="completed",
                         selected_model=selected_model,
                         reason=reason,
+                        task=label,
                         started_at=started_at,
                         started_monotonic=started,
                         streamed_characters=streamed_characters,
@@ -435,6 +548,7 @@ async def chat_completions(
                         "requested_model": body.get("model"),
                         "route": selected_model,
                         "reason": reason,
+                        "task_label": label,
                         "success": True,
                         "stream": True,
                         "prompt_tokens": prompt_tokens,
@@ -477,6 +591,7 @@ async def chat_completions(
             status="generating",
             selected_model=selected_model,
             reason=reason,
+            task=label,
             started_at=started_at,
             started_monotonic=started,
         )
@@ -518,6 +633,7 @@ async def chat_completions(
             status="completed",
             selected_model=selected_model,
             reason=reason,
+            task=label,
             started_at=started_at,
             started_monotonic=started,
             estimated_completion_tokens=completion_tokens,
@@ -533,6 +649,7 @@ async def chat_completions(
             "requested_model": body.get("model"),
             "route": selected_model,
             "reason": reason,
+            "task_label": label,
             "success": True,
             "stream": False,
             "prompt_tokens": prompt_tokens,
